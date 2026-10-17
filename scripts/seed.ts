@@ -5,6 +5,8 @@ import { applyContingency, calculateCostLine } from "../src/domain/calculations"
 import { getDb, nowIso } from "../src/lib/db";
 import { hashPassword } from "../src/lib/password";
 import { componentCost, loadBundle } from "../src/lib/repo";
+import { resolveDbPath, resolveUploadsDir } from "../src/lib/config";
+import { checkSeedAllowed, seedOrgUploadDir } from "./seed-guard";
 
 const ORG = "org_demo";
 const PM = "user_demo_pm";
@@ -51,8 +53,16 @@ const components: Record<string, {
   M: { c: 2, u: 1, k: 1, e: 1, life: [15, 25], qty: 1, action: "maintain", confidence: "low", summary: "Synthetic demo entry: paving and landscaping scored 2.", issue: "Play areas are marked not applicable.", notes: "Low confidence outdoor note. Not a survey." },
 };
 
+const targetDb = resolveDbPath();
+const targetUploads = resolveUploadsDir();
+const decision = checkSeedAllowed({ env: process.env, argv: process.argv.slice(2), dbPath: targetDb, uploadsDir: targetUploads });
+if (!decision.ok) {
+  console.error(decision.reason);
+  process.exit(1);
+}
+console.error(`[seed] mode=${decision.mode} db=${targetDb} uploads=${targetUploads}`);
+const uploadDir = seedOrgUploadDir(targetUploads, ORG);
 const db = getDb();
-const uploadDir = path.join(process.cwd(), "data", "uploads", ORG);
 fs.rmSync(uploadDir, { recursive: true, force: true });
 db.prepare(`DELETE FROM organizations WHERE id = ?`).run(ORG);
 
@@ -178,7 +188,7 @@ const tx = db.transaction(() => {
   db.prepare(`INSERT INTO energy_measures (id, assessment_id, topic_key, investment_low, investment_high, qualitative_benefit, dependency_note, verification_required, notes) VALUES (?, ?, 'ev_charging', 15000, 36000, 'Readiness only. No tariff or saving is stated.', 'Electrical capacity.', 1, 'Synthetic.')`).run("en_ev", ASMT);
   db.prepare(`INSERT INTO energy_measures (id, assessment_id, topic_key, investment_low, investment_high, qualitative_benefit, dependency_note, verification_required, notes) VALUES (?, ?, 'heating_replacement', 192000, 288000, 'Replaces an aging plant on the entered scores. Efficiency gain is not quantified.', 'Hot water and PV.', 1, 'Matches the heating component range. Not a quotation.')`).run("en_heat", ASMT);
 
-  const dir = path.join(process.cwd(), "data", "uploads", ORG, PROP);
+  const dir = path.join(uploadDir, PROP);
   fs.mkdirSync(dir, { recursive: true });
   const pdf = Buffer.from(`%PDF-1.1\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\nDEMO synthetic document. Not a real record.\n`);
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
