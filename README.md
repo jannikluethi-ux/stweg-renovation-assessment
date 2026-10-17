@@ -18,25 +18,40 @@ SQLite is used via `better-sqlite3` because PostgreSQL and Docker are not availa
 ```bash
 cd /workspace/stweg-assessment
 npm install
-npm run seed
 npm test
 npm run build
-npx next start -H 127.0.0.1 -p 3456
+npm run start
 ```
 
-`npm run seed` resets the demo organization and its data. It is safe to run again. It does not touch other organizations if you add them later in the same database file (`data/stweg.db`).
+`npm run dev` and `npm run start` listen on `127.0.0.1:3456` only, with Next.js telemetry disabled (`NEXT_TELEMETRY_DISABLED=1`). The scripts use a plain POSIX environment prefix, so they work on Linux and macOS; on Windows use WSL or set the variable yourself. If port 3456 is already taken, stop and check what holds it (`ss -ltnp`) before choosing another port by hand.
 
-Development server:
+### Storage paths
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `STWEG_DB_PATH` | `<working dir>/data/stweg.db` | SQLite database file |
+| `STWEG_UPLOADS_DIR` | `<working dir>/data/uploads` | Uploaded documents and photos |
+
+Overrides must be absolute paths. All paths are resolved in `src/lib/config.ts`.
+
+### Tests
+
+`npm test` runs with `NODE_ENV=test STWEG_TEST=1` and loads `src/test/setup.ts`, which points every test process at a disposable temp database and uploads directory (`src/test/harness.ts`, `withTempEnv()`). In test mode, any attempt to use the real `data/` locations, or any path outside the OS temp directory, throws before anything is opened.
+
+### Seeding the demo organization
+
+`npm run seed` deletes and recreates the demo organization and its uploads folder. It refuses to run unless `STWEG_ALLOW_SEED=1` is set **and** either both paths point into a temp directory or the explicit confirmation flag is passed:
 
 ```bash
-npm run dev
+# Disposable copy (recommended)
+D=$(mktemp -d)
+STWEG_ALLOW_SEED=1 STWEG_DB_PATH="$D/stweg.db" STWEG_UPLOADS_DIR="$D/uploads" npm run seed
+
+# Reset the demo organization in the database at the configured path (default data/stweg.db)
+STWEG_ALLOW_SEED=1 npm run seed -- --i-understand-this-deletes-org_demo
 ```
 
-The dev script listens on `127.0.0.1:3456`. If that port is already taken, start on `3457`:
-
-```bash
-npx next start -H 127.0.0.1 -p 3457
-```
+It only deletes files under `<uploads dir>/org_demo`. It does not touch other organizations in the same database file.
 
 Do not expose this app on a public host from this build.
 

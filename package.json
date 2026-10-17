@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev": "next dev -H 127.0.0.1 -p 3456",
+    "dev": "NEXT_TELEMETRY_DISABLED=1 next dev -H 127.0.0.1 -p 3456",
     "build": "next build",
-    "start": "next start -H 127.0.0.1 -p 3456",
+    "start": "NEXT_TELEMETRY_DISABLED=1 next start -H 127.0.0.1 -p 3456",
     "seed": "tsx scripts/seed.ts",
     "test": "NODE_ENV=test STWEG_TEST=1 tsx --test --import ./src/test/setup.ts src/domain/*.test.ts src/test/*.test.ts"
   },
