@@ -2,11 +2,12 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { SCHEMA_SQL } from "./schema";
+import { resolveDbPath } from "./config";
 
 const globalForDb = globalThis as unknown as { stwegDb?: Database.Database };
 
 export function databasePath(): string {
-  return path.join(process.cwd(), "data", "stweg.db");
+  return resolveDbPath();
 }
 
 export function getDb(): Database.Database {
@@ -21,6 +22,14 @@ export function getDb(): Database.Database {
     globalForDb.stwegDb = db;
   }
   return globalForDb.stwegDb;
+}
+
+/** Close and forget the cached connection (used by the test harness). */
+export function closeDb(): void {
+  if (globalForDb.stwegDb) {
+    globalForDb.stwegDb.close();
+    globalForDb.stwegDb = undefined;
+  }
 }
 
 export function nowIso(): string {

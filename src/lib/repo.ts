@@ -59,6 +59,7 @@ import { draftFromEnteredData } from "../domain/assistant";
 import { runQualityCheck, type QualityComponent, type QualityResult } from "../domain/quality";
 import { buildReportModel, type ReportModel, type ReportSource } from "../domain/report";
 import { canEditGlobalAssumptions, getDb, nowIso, writeAudit, type Role, type SessionUser } from "./db";
+import { resolveUploadsDir } from "./config";
 
 type Row = Record<string, any>;
 
@@ -987,7 +988,7 @@ export function buildBundleReport(bundle: Bundle, reportVersion = 1): ReportMode
 }
 
 export function uploadsRoot(): string {
-  return path.join(process.cwd(), "data", "uploads");
+  return resolveUploadsDir();
 }
 
 export function assertInsideUploads(storageReference: string): string {
