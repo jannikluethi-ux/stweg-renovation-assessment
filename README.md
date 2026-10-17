@@ -32,19 +32,19 @@ npm run start
 | `STWEG_DB_PATH` | `<working dir>/data/stweg.db` | SQLite database file |
 | `STWEG_UPLOADS_DIR` | `<working dir>/data/uploads` | Uploaded documents and photos |
 
-Overrides must be absolute paths. All paths are resolved in `src/lib/config.ts`.
+Overrides must be absolute paths. An unset **or empty** variable (for example `STWEG_DB_PATH=` or an unset `$VAR` expansion) falls back to the default, i.e. the real `data/` location; test mode refuses that default. All paths are resolved in `src/lib/config.ts`.
 
 ### Tests
 
-`npm test` runs with `NODE_ENV=test STWEG_TEST=1` and loads `src/test/setup.ts`, which points every test process at a disposable temp database and uploads directory (`src/test/harness.ts`, `withTempEnv()`). In test mode, any attempt to use the real `data/` locations, or any path outside the OS temp directory, throws before anything is opened.
+`npm test` runs with `NODE_ENV=test STWEG_TEST=1` and loads `src/test/setup.ts`, which points every test process at a disposable database and uploads directory created by `withTempEnv()` (`src/test/harness.ts`). In test mode, `src/lib/config.ts` accepts a DB or uploads path only if, after resolving every symlink (including dangling ones), it is not the default `data/` directory or anything inside it, and it lies inside a directory carrying the harness marker file `.stweg-harness` that is not `/` and does not contain the working directory. Otherwise path resolution throws before the database is opened. Living under `/tmp` (or under `TMPDIR`) does not make a path acceptable by itself, and the harness refuses to run when the OS temp directory is `/`.
 
 ### Seeding the demo organization
 
-`npm run seed` deletes and recreates the demo organization and its uploads folder. It refuses to run unless `STWEG_ALLOW_SEED=1` is set **and** either both paths point into a temp directory or the explicit confirmation flag is passed:
+`npm run seed` deletes and recreates the demo organization and its uploads folder. It refuses to run unless `STWEG_ALLOW_SEED=1` is set **and** either both paths are inside a disposable directory marked with `.stweg-harness` (same rules as test mode above; a directory merely named or located under `tmp` does not count, and the default `data/` location never counts) or the explicit confirmation flag is passed:
 
 ```bash
 # Disposable copy (recommended)
-D=$(mktemp -d)
+D=$(mktemp -d) && touch "$D/.stweg-harness"
 STWEG_ALLOW_SEED=1 STWEG_DB_PATH="$D/stweg.db" STWEG_UPLOADS_DIR="$D/uploads" npm run seed
 
 # Reset the demo organization in the database at the configured path (default data/stweg.db)
