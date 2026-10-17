@@ -22,6 +22,18 @@ import path from "node:path";
  *      of the cwd, and is not itself protected.
  * Being inside os.tmpdir() grants nothing, so TMPDIR=/ or a checkout located
  * under /tmp cannot turn real data into "temp" data.
+ *
+ * For DATABASE paths, guarded modes additionally apply a file-identity check
+ * (classifyDisposableDbPath / checkDbFileIdentity), because a hard link has its
+ * own path but shares the protected file's data. For the candidate DB and each
+ * sidecar (-wal, -shm, -journal) that EXISTS:
+ *   - refuse if it has more than one hard link (nlink > 1; conservative), and
+ *   - refuse if its (dev, ino) equals that of an existing protected file
+ *     (default DB, -wal, -shm, -journal), and
+ *   - fail closed if identity data is unreliable (win32, ino 0, non-bigint
+ *     fields, or a stat error other than "does not exist").
+ * Files that do not exist yet cannot be hard links; SQLite creates them fresh.
+ * None of this runs outside guarded modes.
  */
 
 type Env = NodeJS.ProcessEnv;
@@ -115,7 +127,17 @@ export const HARNESS_MARKER = ".stweg-harness";
 
 export type DisposableCheck =
   | { ok: true; markedDir: string }
-  | { ok: false; code: "protected" | "no-marker" | "marker-root" | "marker-contains-cwd" | "marker-protected"; message: string };
+  | { ok: false; code: DisposableRefusal; message: string };
+
+export type DisposableRefusal =
+  | "protected"
+  | "no-marker"
+  | "marker-root"
+  | "marker-contains-cwd"
+  | "marker-protected"
+  | "hardlinked"
+  | "same-file"
+  | "identity-unreliable";
 
 /** Canonical default data dir, DB (+ -wal/-shm) and uploads dir for this cwd. */
 export function protectedLocations(cwd: string = process.cwd()): string[] {
@@ -164,9 +186,101 @@ export function classifyDisposablePath(candidate: string, cwd: string = process.
   return { ok: true, markedDir: marked };
 }
 
+/** SQLite files that belong to a database path. */
+export const DB_FILE_SUFFIXES = ["", "-wal", "-shm", "-journal"] as const;
+
+/** Minimal stat result used for the identity check (fs.BigIntStats satisfies it). */
+export interface IdentityStat {
+  dev: bigint;
+  ino: bigint;
+  nlink: bigint;
+}
+
+/**
+ * How the identity check reads file identity. stat returns null when the path
+ * does not exist and throws for anything else. Replaceable in tests only
+ * (setIdentityProbeForTests) to simulate unreliable platforms.
+ */
+export interface IdentityProbe {
+  platform: string;
+  stat: (file: string) => IdentityStat | null;
+}
+
+function defaultIdentityStat(file: string): IdentityStat | null {
+  try {
+    return fs.statSync(file, { bigint: true });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return null;
+    throw error;
+  }
+}
+
+const defaultIdentityProbe: IdentityProbe = { platform: process.platform, stat: defaultIdentityStat };
+let activeIdentityProbe: IdentityProbe = defaultIdentityProbe;
+
+/** Test-only hook. Replaces (parts of) the identity probe; returns a restore function. */
+export function setIdentityProbeForTests(probe: Partial<IdentityProbe> | null): () => void {
+  const previous = activeIdentityProbe;
+  activeIdentityProbe = probe ? { ...defaultIdentityProbe, ...probe } : defaultIdentityProbe;
+  return () => {
+    activeIdentityProbe = previous;
+  };
+}
+
+function isReliableIdentity(st: IdentityStat, platform: string): boolean {
+  if (platform === "win32") return false; // st_ino/st_nlink are not trusted there; fail closed
+  return typeof st.dev === "bigint" && typeof st.ino === "bigint" && typeof st.nlink === "bigint" && st.ino > BigInt(0);
+}
+
+type IdentityCheck = { ok: true } | { ok: false; code: "hardlinked" | "same-file" | "identity-unreliable"; message: string };
+
+function dbFiles(dbPath: string): string[] {
+  const bases = [...new Set([path.resolve(dbPath), canonicalPath(dbPath)])];
+  return [...new Set(bases.flatMap((base) => DB_FILE_SUFFIXES.map((suffix) => `${base}${suffix}`)))];
+}
+
+/**
+ * Guarded-mode identity check for a candidate DB path (see header). Compares
+ * the existing candidate files with the existing protected DB files of this cwd.
+ */
+export function checkDbFileIdentity(candidate: string, cwd: string = process.cwd(), probe: IdentityProbe = activeIdentityProbe): IdentityCheck {
+  const unreliable = (why: string): IdentityCheck => ({ ok: false, code: "identity-unreliable", message: `cannot be verified as a separate file (${why}); refusing in guarded mode` });
+  try {
+    const existing: IdentityStat[] = [];
+    for (const file of dbFiles(candidate)) {
+      const st = probe.stat(file);
+      if (!st) continue;
+      if (!isReliableIdentity(st, probe.platform)) return unreliable("file identity information is unreliable on this platform or filesystem");
+      if (st.nlink > BigInt(1)) return { ok: false, code: "hardlinked", message: "has a database file with more than one hard link" };
+      existing.push(st);
+    }
+    if (existing.length === 0) return { ok: true };
+    for (const file of dbFiles(defaultDbPath(cwd))) {
+      const st = probe.stat(file);
+      if (!st) continue;
+      if (!isReliableIdentity(st, probe.platform)) return unreliable("protected file identity information is unreliable");
+      if (existing.some((c) => c.dev === st.dev && c.ino === st.ino)) {
+        return { ok: false, code: "same-file", message: "is the same file as the default database (hard link or alias)" };
+      }
+    }
+    return { ok: true };
+  } catch (error) {
+    return unreliable(`stat failed: ${(error as NodeJS.ErrnoException).code ?? "error"}`);
+  }
+}
+
+/** classifyDisposablePath() plus the file-identity check, for database paths. */
+export function classifyDisposableDbPath(candidate: string, cwd: string = process.cwd(), probe?: IdentityProbe): DisposableCheck {
+  const check = classifyDisposablePath(candidate, cwd);
+  if (!check.ok) return check;
+  const identity = checkDbFileIdentity(candidate, cwd, probe);
+  return identity.ok ? check : identity;
+}
+
 function assertTestSafe(kind: "database" | "uploads", target: string, cwd: string, env: Env): void {
   if (!isTestMode(env)) return;
-  const check = classifyDisposablePath(target, cwd);
+  const check = kind === "database" ? classifyDisposableDbPath(target, cwd) : classifyDisposablePath(target, cwd);
   if (check.ok) return;
   if (check.code === "protected") {
     throw new ConfigError(`Test mode refused the real ${kind} location. Use a disposable directory (withTempEnv).`);

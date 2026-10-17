@@ -1,5 +1,5 @@
 import path from "node:path";
-import { canonicalPath, classifyDisposablePath, isInside } from "../src/lib/config";
+import { canonicalPath, classifyDisposableDbPath, classifyDisposablePath, isInside } from "../src/lib/config";
 
 /**
  * The seed deletes the demo organization (DB cascade) and its uploads folder.
@@ -7,8 +7,13 @@ import { canonicalPath, classifyDisposablePath, isInside } from "../src/lib/conf
  *   - temp mode: both the DB path and the uploads dir pass the shared classifier
  *     classifyDisposablePath() in src/lib/config.ts (not the default data dir,
  *     inside a directory marked with .stweg-harness that is not "/" and does not
- *     contain the cwd). Being under os.tmpdir() alone does NOT qualify; or
- *   - the explicit confirmation flag is passed on the command line.
+ *     contain the cwd). Being under os.tmpdir() alone does NOT qualify. The DB
+ *     path also passes the file-identity check (no hard link to / alias of the
+ *     default DB or its sidecars, nlink 1, reliable inode data); or
+ *   - the explicit confirmation flag is passed on the command line. This is the
+ *     operator's explicit decision to reset org_demo in the configured DB; it
+ *     does not apply the temp-mode location or identity checks (unchanged).
+ *     In test mode, resolveDbPath() still applies the test-mode guard first.
  * File deletion is confined to <uploadsDir>/<org>.
  */
 export const SEED_CONFIRM_FLAG = "--i-understand-this-deletes-org_demo";
@@ -22,7 +27,7 @@ export function checkSeedAllowed(input: { env: NodeJS.ProcessEnv; argv: string[]
   const cwd = input.cwd ?? process.cwd();
   const uploads = canonicalPath(input.uploadsDir);
   if (path.parse(uploads).root === uploads) return { ok: false, reason: "Seed refused: the uploads directory must not be a filesystem root." };
-  const db = classifyDisposablePath(input.dbPath, cwd);
+  const db = classifyDisposableDbPath(input.dbPath, cwd);
   const up = classifyDisposablePath(input.uploadsDir, cwd);
   if (db.ok && up.ok) return { ok: true, mode: "temp" };
   if (input.argv.includes(SEED_CONFIRM_FLAG)) return { ok: true, mode: "explicit" };

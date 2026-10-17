@@ -36,7 +36,7 @@ Overrides must be absolute paths. An unset **or empty** variable (for example `S
 
 ### Tests
 
-`npm test` runs with `NODE_ENV=test STWEG_TEST=1` and loads `src/test/setup.ts`, which points every test process at a disposable database and uploads directory created by `withTempEnv()` (`src/test/harness.ts`). In test mode, `src/lib/config.ts` accepts a DB or uploads path only if, after resolving every symlink (including dangling ones), it is not the default `data/` directory or anything inside it, and it lies inside a directory carrying the harness marker file `.stweg-harness` that is not `/` and does not contain the working directory. Otherwise path resolution throws before the database is opened. Living under `/tmp` (or under `TMPDIR`) does not make a path acceptable by itself, and the harness refuses to run when the OS temp directory is `/`.
+`npm test` runs with `NODE_ENV=test STWEG_TEST=1` and loads `src/test/setup.ts`, which points every test process at a disposable database and uploads directory created by `withTempEnv()` (`src/test/harness.ts`). In test mode, `src/lib/config.ts` accepts a DB or uploads path only if, after resolving every symlink (including dangling ones), it is not the default `data/` directory or anything inside it, and it lies inside a directory carrying the harness marker file `.stweg-harness` that is not `/` and does not contain the working directory. Otherwise path resolution throws before the database is opened. Living under `/tmp` (or under `TMPDIR`) does not make a path acceptable by itself, and the harness refuses to run when the OS temp directory is `/`. For a DB path there is also a file-identity check: if the DB file or one of its `-wal`, `-shm` or `-journal` files already exists, it must have exactly one hard link and must not be the same file (device and inode) as the default database or its sidecars; where that cannot be verified reliably (Windows, inode 0, stat errors) the path is refused. Files that do not exist yet are fine.
 
 ### Seeding the demo organization
 
@@ -51,7 +51,7 @@ STWEG_ALLOW_SEED=1 STWEG_DB_PATH="$D/stweg.db" STWEG_UPLOADS_DIR="$D/uploads" np
 STWEG_ALLOW_SEED=1 npm run seed -- --i-understand-this-deletes-org_demo
 ```
 
-It only deletes files under `<uploads dir>/org_demo`. It does not touch other organizations in the same database file.
+It only deletes files under `<uploads dir>/org_demo`. It does not touch other organizations in the same database file. The explicit flag is the operator's decision about the configured database file: it skips the temp-mode location and hard-link checks (so a hard link to `data/stweg.db` would reset the real demo organization), while test mode still refuses such paths.
 
 Do not expose this app on a public host from this build.
 
