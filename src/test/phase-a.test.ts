@@ -7,7 +7,7 @@ import { after, describe, it } from "node:test";
 import { ConfigError, defaultDbPath, defaultUploadsDir, resolveDbPath, resolveUploadsDir, tempRoot } from "../lib/config";
 import { closeDb, databasePath, getDb } from "../lib/db";
 import { uploadsRoot } from "../lib/repo";
-import { removeHarnessDir, withTempEnv } from "./harness";
+import { makeScratchDir, removeHarnessDir, withTempEnv } from "./harness";
 
 const REPO = process.cwd();
 const REAL_DB = path.join(REPO, "data", "stweg.db");
@@ -75,9 +75,11 @@ describe("T-A3 test guard refuses the real DB and real uploads (fail closed)", (
     assert.throws(() => resolveDbPath({ NODE_ENV: "test", STWEG_DB_PATH: REAL_DB } as NodeJS.ProcessEnv, REPO), ConfigError);
     assert.throws(() => resolveUploadsDir(testEnv({ STWEG_UPLOADS_DIR: path.join(REAL_UPLOADS, "org_demo") }), REPO), ConfigError);
   });
-  it("refuses paths outside the OS temp directory", () => {
-    assert.throws(() => resolveDbPath(testEnv({ STWEG_DB_PATH: "/workspace/not-temp.db" }), REPO), /temp directory/);
-    assert.throws(() => resolveUploadsDir(testEnv({ STWEG_UPLOADS_DIR: "/workspace/not-temp-uploads" }), REPO), /temp directory/);
+  it("refuses paths that are not inside a harness-marked disposable directory", () => {
+    assert.throws(() => resolveDbPath(testEnv({ STWEG_DB_PATH: "/workspace/not-temp.db" }), REPO), /disposable directory marked/);
+    assert.throws(() => resolveUploadsDir(testEnv({ STWEG_UPLOADS_DIR: "/workspace/not-temp-uploads" }), REPO), /disposable directory marked/);
+    // being inside os.tmpdir() alone is not enough
+    assert.throws(() => resolveDbPath(testEnv({ STWEG_DB_PATH: path.join(tempRoot(), "stweg-unmarked-check", "x.db") }), REPO), /disposable directory marked/);
   });
   it("refuses a symlink in tmp that points at the real DB", { skip: !fs.existsSync(REAL_DB) && "real DB not present" }, () => {
     const t = withTempEnv();
@@ -89,15 +91,28 @@ describe("T-A3 test guard refuses the real DB and real uploads (fail closed)", (
       t.cleanup();
     }
   });
-  it("getDb() throws before opening anything when the env points at the real DB", () => {
+  it("getDb() throws before opening anything when the env points at the default DB (fake checkout as cwd)", () => {
+    // The cwd is a scratch "checkout", so even a broken guard could only touch the scratch dir.
+    const scratch = makeScratchDir();
+    const fakeDb = path.join(scratch.dir, "data", "stweg.db");
+    fs.mkdirSync(path.dirname(fakeDb));
+    fs.writeFileSync(fakeDb, "not a database");
     const saved = process.env.STWEG_DB_PATH;
+    const savedCwd = process.cwd();
     closeDb();
-    process.env.STWEG_DB_PATH = REAL_DB;
     try {
-      assert.throws(() => getDb(), ConfigError);
+      process.chdir(scratch.dir);
+      process.env.STWEG_DB_PATH = fakeDb;
+      assert.throws(() => getDb(), /real database/);
+      delete process.env.STWEG_DB_PATH;
+      assert.throws(() => getDb(), /real database/);
+      assert.equal(fs.readFileSync(fakeDb, "utf8"), "not a database");
+      assert.deepEqual(fs.readdirSync(path.dirname(fakeDb)), ["stweg.db"]);
     } finally {
+      process.chdir(savedCwd);
       process.env.STWEG_DB_PATH = saved;
       closeDb();
+      scratch.cleanup();
     }
     assert.equal(realFingerprint(), realBefore);
   });
@@ -110,9 +125,14 @@ describe("T-A3 test guard refuses the real DB and real uploads (fail closed)", (
       process.env.STWEG_UPLOADS_DIR = saved;
     }
   });
-  it("accepts temp paths", () => {
-    const db = path.join(tempRoot(), "stweg-guard-check", "x.db");
-    assert.equal(resolveDbPath(testEnv({ STWEG_DB_PATH: db }), REPO), db);
+  it("accepts paths inside a harness-marked temp dir", () => {
+    const t = withTempEnv();
+    try {
+      const db = path.join(t.dir, "nested", "x.db");
+      assert.equal(resolveDbPath(testEnv({ STWEG_DB_PATH: db }), REPO), db);
+    } finally {
+      t.cleanup();
+    }
   });
 });
 
@@ -141,8 +161,9 @@ describe("T-A4 harness creates and removes only its own temp dir; real data unch
     try {
       assert.throws(() => removeHarnessDir(sibling, "wrong-token"), /marker/);
       assert.throws(() => removeHarnessDir(other, "x"), /not created by the test harness/);
-      assert.throws(() => removeHarnessDir(REPO, "x"), /temp directory/);
-      assert.throws(() => removeHarnessDir(path.join(REPO, "data"), "x"), /temp directory/);
+      // works wherever the checkout lives (also under the temp dir): every variant must refuse
+      assert.throws(() => removeHarnessDir(REPO, "x"), /Refusing to remove/);
+      assert.throws(() => removeHarnessDir(path.join(REPO, "data"), "x"), /Refusing to remove/);
       assert.ok(fs.existsSync(keep));
       assert.ok(fs.existsSync(other));
     } finally {
