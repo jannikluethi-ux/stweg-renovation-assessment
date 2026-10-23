@@ -1,5 +1,5 @@
 import path from "node:path";
-import { canonicalPath, classifyDisposableDbPath, classifyDisposablePath, isInside } from "../src/lib/config";
+import { canonicalPath, checkDbFileIdentity, checkDbFileLinks, classifyDisposableDbPath, classifyDisposablePath, defaultDbPath, isInside } from "../src/lib/config";
 
 /**
  * The seed deletes the demo organization (DB cascade) and its uploads folder.
@@ -12,7 +12,14 @@ import { canonicalPath, classifyDisposableDbPath, classifyDisposablePath, isInsi
  *     default DB or its sidecars, nlink 1, reliable inode data); or
  *   - the explicit confirmation flag is passed on the command line. This is the
  *     operator's explicit decision to reset org_demo in the configured DB; it
- *     does not apply the temp-mode location or identity checks (unchanged).
+ *     does not apply the temp-mode location checks, and it still proceeds
+ *     (documented limitation L1, asserted by T-A10b). R1 (3F, minimum variant):
+ *     explicit mode runs the file-identity check and prints a WARNING to stderr
+ *     when the target shares its data with another path:
+ *       - configured path lexically equal to the default <cwd>/data/stweg.db:
+ *         any existing DB file or sidecar with nlink > 1 or unreliable identity;
+ *       - any other configured path: the full identity check (nlink > 1, or the
+ *         same file as the default DB or one of its sidecars, e.g. a hard link).
  *     In test mode, resolveDbPath() still applies the test-mode guard first.
  * File deletion is confined to <uploadsDir>/<org>.
  */
@@ -30,12 +37,28 @@ export function checkSeedAllowed(input: { env: NodeJS.ProcessEnv; argv: string[]
   const db = classifyDisposableDbPath(input.dbPath, cwd);
   const up = classifyDisposablePath(input.uploadsDir, cwd);
   if (db.ok && up.ok) return { ok: true, mode: "temp" };
-  if (input.argv.includes(SEED_CONFIRM_FLAG)) return { ok: true, mode: "explicit" };
+  if (input.argv.includes(SEED_CONFIRM_FLAG)) {
+    const warning = explicitModeIdentityWarning(input.dbPath, cwd);
+    if (warning) console.error(warning);
+    return { ok: true, mode: "explicit" };
+  }
   const why = !db.ok ? `the DB path ${db.message}` : `the uploads path ${(up as { message: string }).message}`;
   return {
     ok: false,
     reason: `Seed refused: ${why}. Use a disposable directory marked with .stweg-harness for both paths, or pass ${SEED_CONFIRM_FLAG} to reset the demo organization in this database.`,
   };
+}
+
+/**
+ * R1 (3F L1): identity check for explicit mode. Returns a one-line warning when
+ * the target DB shares its data with another path, otherwise null. Never throws.
+ */
+export function explicitModeIdentityWarning(dbPath: string, cwd: string = process.cwd()): string | null {
+  const isDefault = path.resolve(dbPath) === path.resolve(defaultDbPath(cwd));
+  const identity = isDefault ? checkDbFileLinks(dbPath) : checkDbFileIdentity(dbPath, cwd);
+  if (identity.ok) return null;
+  const what = identity.code === "same-file" ? "the target is the same file as data/stweg.db" : `the target DB ${identity.message}`;
+  return `[seed] WARNING (explicit mode): ${what}. Resetting org_demo here also changes every other path that shares this file (hard link or alias).`;
 }
 
 /** <uploadsDir>/<org>, verified to be strictly inside the configured uploads dir. */

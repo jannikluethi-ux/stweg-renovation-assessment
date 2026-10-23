@@ -67,6 +67,11 @@ function fromEnv(env: Env, name: string, fallback: string): string {
 
 const MAX_SYMLINK_HOPS = 40;
 
+/** R5 (3F F1): stat/readlink failures other than "does not exist" become a ConfigError (fails closed). */
+function unresolvable(code: string | undefined): ConfigError {
+  return new ConfigError(`Cannot resolve a storage path: a path component could not be inspected (${code ?? "unknown error"}). Refusing.`);
+}
+
 /**
  * Canonical absolute path. Resolves every symlink component by component with
  * lstat/readlink, also when the link target (or anything after it) does not
@@ -90,11 +95,16 @@ export function canonicalPath(target: string): string {
       stat = fs.lstatSync(next);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+      if (code !== "ENOENT" && code !== "ENOTDIR") throw unresolvable(code);
     }
     if (stat?.isSymbolicLink()) {
       if (++hops > MAX_SYMLINK_HOPS) throw new ConfigError("Too many symbolic links while resolving a storage path.");
-      const link = fs.readlinkSync(next);
+      let link: string;
+      try {
+        link = fs.readlinkSync(next);
+      } catch (error) {
+        throw unresolvable((error as NodeJS.ErrnoException).code);
+      }
       if (path.isAbsolute(link)) resolved = path.parse(link).root;
       pending = [...link.split(path.sep).filter(Boolean), ...pending];
       continue;
@@ -219,8 +229,12 @@ function defaultIdentityStat(file: string): IdentityStat | null {
 const defaultIdentityProbe: IdentityProbe = { platform: process.platform, stat: defaultIdentityStat };
 let activeIdentityProbe: IdentityProbe = defaultIdentityProbe;
 
-/** Test-only hook. Replaces (parts of) the identity probe; returns a restore function. */
-export function setIdentityProbeForTests(probe: Partial<IdentityProbe> | null): () => void {
+/**
+ * Test-only hook. Replaces (parts of) the identity probe; returns a restore function.
+ * R3 (3F F2): refuses outside test mode, so production code cannot disable the check.
+ */
+export function setIdentityProbeForTests(probe: Partial<IdentityProbe> | null, env: Env = process.env): () => void {
+  if (!isTestMode(env)) throw new ConfigError("setIdentityProbeForTests is only available in test mode.");
   const previous = activeIdentityProbe;
   activeIdentityProbe = probe ? { ...defaultIdentityProbe, ...probe } : defaultIdentityProbe;
   return () => {
@@ -233,7 +247,7 @@ function isReliableIdentity(st: IdentityStat, platform: string): boolean {
   return typeof st.dev === "bigint" && typeof st.ino === "bigint" && typeof st.nlink === "bigint" && st.ino > BigInt(0);
 }
 
-type IdentityCheck = { ok: true } | { ok: false; code: "hardlinked" | "same-file" | "identity-unreliable"; message: string };
+export type IdentityCheck = { ok: true } | { ok: false; code: "hardlinked" | "same-file" | "identity-unreliable"; message: string };
 
 function dbFiles(dbPath: string): string[] {
   const bases = [...new Set([path.resolve(dbPath), canonicalPath(dbPath)])];
@@ -244,17 +258,40 @@ function dbFiles(dbPath: string): string[] {
  * Guarded-mode identity check for a candidate DB path (see header). Compares
  * the existing candidate files with the existing protected DB files of this cwd.
  */
-export function checkDbFileIdentity(candidate: string, cwd: string = process.cwd(), probe: IdentityProbe = activeIdentityProbe): IdentityCheck {
-  const unreliable = (why: string): IdentityCheck => ({ ok: false, code: "identity-unreliable", message: `cannot be verified as a separate file (${why}); refusing in guarded mode` });
+const unreliableIdentity = (why: string): IdentityCheck => ({ ok: false, code: "identity-unreliable", message: `cannot be verified as a separate file (${why}); refusing in guarded mode` });
+
+/** Reads identity of the existing candidate DB files; refuses nlink > 1 and unreliable data. */
+function existingDbFileIdentities(candidate: string, probe: IdentityProbe): IdentityCheck | IdentityStat[] {
+  const existing: IdentityStat[] = [];
+  for (const file of dbFiles(candidate)) {
+    const st = probe.stat(file);
+    if (!st) continue;
+    if (!isReliableIdentity(st, probe.platform)) return unreliableIdentity("file identity information is unreliable on this platform or filesystem");
+    if (st.nlink > BigInt(1)) return { ok: false, code: "hardlinked", message: "has a database file with more than one hard link" };
+    existing.push(st);
+  }
+  return existing;
+}
+
+/**
+ * Link-count part of the identity check only (no comparison with the default DB):
+ * every existing DB file (and sidecar) of the candidate has nlink 1 and reliable identity data.
+ * Used by the seed's explicit mode when the target IS the default DB path (R1).
+ */
+export function checkDbFileLinks(candidate: string, probe: IdentityProbe = activeIdentityProbe): IdentityCheck {
   try {
-    const existing: IdentityStat[] = [];
-    for (const file of dbFiles(candidate)) {
-      const st = probe.stat(file);
-      if (!st) continue;
-      if (!isReliableIdentity(st, probe.platform)) return unreliable("file identity information is unreliable on this platform or filesystem");
-      if (st.nlink > BigInt(1)) return { ok: false, code: "hardlinked", message: "has a database file with more than one hard link" };
-      existing.push(st);
-    }
+    const existing = existingDbFileIdentities(candidate, probe);
+    return Array.isArray(existing) ? { ok: true } : existing;
+  } catch (error) {
+    return unreliableIdentity(`stat failed: ${(error as NodeJS.ErrnoException).code ?? "error"}`);
+  }
+}
+
+export function checkDbFileIdentity(candidate: string, cwd: string = process.cwd(), probe: IdentityProbe = activeIdentityProbe): IdentityCheck {
+  const unreliable = unreliableIdentity;
+  try {
+    const existing = existingDbFileIdentities(candidate, probe);
+    if (!Array.isArray(existing)) return existing;
     if (existing.length === 0) return { ok: true };
     for (const file of dbFiles(defaultDbPath(cwd))) {
       const st = probe.stat(file);

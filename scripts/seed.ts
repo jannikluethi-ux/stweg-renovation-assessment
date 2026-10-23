@@ -53,15 +53,22 @@ const components: Record<string, {
   M: { c: 2, u: 1, k: 1, e: 1, life: [15, 25], qty: 1, action: "maintain", confidence: "low", summary: "Synthetic demo entry: paving and landscaping scored 2.", issue: "Play areas are marked not applicable.", notes: "Low confidence outdoor note. Not a survey." },
 };
 
-const targetDb = resolveDbPath();
-const targetUploads = resolveUploadsDir();
-const decision = checkSeedAllowed({ env: process.env, argv: process.argv.slice(2), dbPath: targetDb, uploadsDir: targetUploads });
-if (!decision.ok) {
-  console.error(decision.reason);
+/** F7: every guard refusal ends with a one-line message and exit 1, without a stack trace. */
+function refuse(error: unknown): never {
+  console.error(error instanceof Error ? error.message : String(error));
   process.exit(1);
 }
-console.error(`[seed] mode=${decision.mode} db=${targetDb} uploads=${targetUploads}`);
-const uploadDir = seedOrgUploadDir(targetUploads, ORG);
+let targetDb: string, targetUploads: string, uploadDir: string;
+try {
+  targetDb = resolveDbPath();
+  targetUploads = resolveUploadsDir();
+  const decision = checkSeedAllowed({ env: process.env, argv: process.argv.slice(2), dbPath: targetDb, uploadsDir: targetUploads });
+  if (!decision.ok) refuse(decision.reason);
+  console.error(`[seed] mode=${decision.mode} db=${targetDb} uploads=${targetUploads}`);
+  uploadDir = seedOrgUploadDir(targetUploads, ORG);
+} catch (error) {
+  refuse(error);
+}
 const db = getDb();
 fs.rmSync(uploadDir, { recursive: true, force: true });
 db.prepare(`DELETE FROM organizations WHERE id = ?`).run(ORG);
