@@ -55,6 +55,61 @@ It only deletes files under `<uploads dir>/org_demo`. It does not touch other or
 
 Do not expose this app on a public host from this build.
 
+## DB schema and migrations
+
+Phase A2 adds a migration framework and backup tooling. **In this build these tools work only on marked disposable databases.** They refuse the real database. The app itself does not change: `getDb()` (`src/lib/db.ts`) still runs `SCHEMA_SQL` (`CREATE … IF NOT EXISTS`) on first use and does not check or migrate the schema at startup.
+
+- **Registry:** exactly one migration, `0001_baseline` (`src/lib/migrations/`). Its checksum is frozen, and its schema equals `SCHEMA_SQL` (pinned fingerprint v1 `ae794d44…a581`, structural v1 `87b8feae…f321`).
+- **States:** `EMPTY`, `LEGACY_BASELINE` (a schema created by the app, without history), `LEGACY_UNKNOWN`, `MANAGED_CURRENT`, `MANAGED_PENDING`, `NEWER`, `INCONSISTENT`.
+- **Adoption:** `apply` on `LEGACY_BASELINE` records `0001_baseline` in `schema_migrations` and sets `user_version` 1. No table data changes.
+
+| Command | Purpose |
+| --- | --- |
+| `npm run db:migrate -- status --db <file> [--json]` | Reads the state from a byte copy. It never opens the database file with SQLite. |
+| `npm run db:migrate -- apply --db <file> [--json]` | Runs the path guard, the holder check, `status` and then `BEGIN IMMEDIATE`, and applies or adopts. |
+| `npm run db:backup -- --db <file> --uploads <dir> --out <dir> [--json]` | Makes a cold copy of the DB (and its `-wal`), a logical `VACUUM INTO` copy and an uploads copy, then verifies them and writes `manifest.json`. |
+| `npm run db:verify-backup -- --backup <dir> [--json]` | Re-verifies an existing backup. |
+| `npm run db:restore -- --backup <dir> --db <file> [--json]` | Restores the verified cold copy. Existing target files are moved into `data-quarantine-<ts>/`, never deleted. Uploads are not restored. |
+
+**Exit codes:**
+
+| Code | Meaning |
+| --- | --- |
+| 0 | ok or no-op |
+| 1 | usage or unexpected error, including "database busy" |
+| 2 | refused: path guard, holder, state, checksum, a changed file, or `JOURNAL_PRESENT` |
+| 3 | rolled back |
+| 4 | post-commit verification failed |
+| 5 | backup or verification failed |
+| 6 | undeterminable: the `-wal` is not empty |
+
+**Path guard (O-9).** Every command refuses with exit 2, before reading anything, in these cases:
+
+- the default `data/` location, or anything inside it;
+- a path outside a directory marked with `.stweg-harness`;
+- a hard link or identity match to the default database.
+
+The backup tools also refuse the O-4 location `/home/box/stweg-backups/`, which is reserved for A2-apply. No flag overrides the guard. A protected-path override exists only in the separately gated A2-apply-0.
+
+**Journal rule.** If a `-journal` file exists, `status` and `apply` refuse with `JOURNAL_PRESENT` (exit 2). They never recover, delete or rewrite a journal. Recovery is always an operator decision; see `docs/a2-apply-runbook.md`.
+
+**Gate G-FM.** No feature migration (`0002` or later) may be authorized or merged until one of the following has been separately authorized, implemented and accepted:
+
+- (a) a read-only startup schema check that refuses any DB not at the expected head, **and** `getDb()` stops running `SCHEMA_SQL` on non-empty DBs; **or**
+- (b) `getDb()` delegating initialization to the migration runner.
+
+Until then, a database created by the app at a new path stays unmanaged (`LEGACY_BASELINE`) and must be adopted with `apply`. G-FM also blocks the phases that need migrations.
+
+**Separately gated (not part of this build):**
+
+- A2-apply-0 (the protected-path override)
+- any backup, apply or restore of the real database
+- a startup schema check
+- feature migrations
+- deletion work
+
+The operator runbook, with prerequisites, stop conditions, recovery steps and limitations, is in `docs/a2-apply-runbook.md`. All A2 verification so far uses synthetic fixtures and disposable copies (automated tests). **Nothing has been verified against the real database.**
+
 ## Demo logins
 
 Both users belong to the single seeded organization.
