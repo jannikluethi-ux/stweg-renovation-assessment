@@ -7,6 +7,10 @@
     "build": "next build",
     "start": "NEXT_TELEMETRY_DISABLED=1 next start -H 127.0.0.1 -p 3456",
     "seed": "tsx scripts/seed.ts",
+    "db:migrate": "tsx scripts/migrate.ts",
+    "db:backup": "tsx scripts/db-backup.ts",
+    "db:verify-backup": "tsx scripts/db-verify-backup.ts",
+    "db:restore": "tsx scripts/db-restore.ts",
     "test": "NODE_ENV=test STWEG_TEST=1 tsx --test --import ./src/test/setup.ts src/domain/*.test.ts src/test/*.test.ts"
   },
   "dependencies": {
